@@ -1,0 +1,735 @@
+package com.example.kimkiminlenerede
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import java.util.UUID
+
+private enum class GameStep(val index: Int, val title: String, val hint: String) {
+    KIM(0, "Kim?", "Örn: Kırmızı şapkalı kedi, Kaptan..."),
+    KIMINLE(1, "Kiminle?", "Örn: Uzaylılarla, iki penguenle..."),
+    NEREDE(2, "Nerede?", "Örn: Mars'ta, okul bahçesinde..."),
+    NE_YAPIYOR(3, "Ne Yapıyor?", "Örn: Halay çekiyor, dondurma yiyor...")
+}
+
+private data class Player(
+    val id: String = "",
+    val name: String = ""
+)
+
+private data class SentenceResult(
+    val readerName: String,
+    val kim: String,
+    val kiminle: String,
+    val nerede: String,
+    val neYapiyor: String
+) {
+    val fullText: String
+        get() = "$kim, $kiminle birlikte $nerede $neYapiyor!"
+}
+
+private object GameShuffler {
+    fun buildSentences(
+        players: List<Player>,
+        answers: Map<GameStep, Map<String, String>>
+    ): List<SentenceResult> {
+        if (players.isEmpty()) return emptyList()
+
+        val kimList = players.map { answers[GameStep.KIM]?.get(it.id).orEmpty() }
+        val kiminleList = derange(players.map { answers[GameStep.KIMINLE]?.get(it.id).orEmpty() })
+        val neredeList = derange(players.map { answers[GameStep.NEREDE]?.get(it.id).orEmpty() })
+        val neYapiyorList = derange(players.map { answers[GameStep.NE_YAPIYOR]?.get(it.id).orEmpty() })
+
+        return players.mapIndexed { i, player ->
+            SentenceResult(
+                readerName = player.name,
+                kim = kimList[i],
+                kiminle = kiminleList[i],
+                nerede = neredeList[i],
+                neYapiyor = neYapiyorList[i]
+            )
+        }
+    }
+
+    private fun derange(items: List<String>): List<String> {
+        if (items.size <= 1) return items
+        val indices = items.indices.toMutableList()
+        var attempts = 0
+        do {
+            indices.shuffle()
+            attempts++
+        } while (indices.indices.any { indices[it] == it } && attempts < 50)
+
+        if (indices.indices.any { indices[it] == it }) {
+            return items.drop(1) + items.first()
+        }
+        return indices.map { items[it] }
+    }
+}
+
+private val MobileBg = Color(0xFFF6F7FB)
+private val CardWhite = Color(0xFFFFFFFF)
+private val TextInk = Color(0xFF0F172A)
+private val TextMuted = Color(0xFF64748B)
+private val BrandIndigo = Color(0xFF4338CA)
+private val BrandIndigoSoft = Color(0xFFEEF2FF)
+private val TickGreen = Color(0xFF16A34A)
+private val DoneGreenSoft = Color(0xFFDCFCE7)
+private val DoneGreenText = Color(0xFF166534)
+private val ResultCardBg = Color(0xFFFFFBEB)
+private val ResultCardBorder = Color(0xFFFDE68A)
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MobileBg
+                ) {
+                    KimKiminleTelefonApp()
+                }
+            }
+        }
+    }
+}
+
+private enum class ScreenState { LOBBY, PLAYING, SHUFFLING, RESULTS }
+
+@Composable
+private fun KimKiminleTelefonApp() {
+    var screen by remember { mutableStateOf(ScreenState.LOBBY) }
+    var players by remember {
+        mutableStateOf(
+            listOf(
+                Player(UUID.randomUUID().toString(), "1. Kişi"),
+                Player(UUID.randomUUID().toString(), "2. Kişi")
+            )
+        )
+    }
+
+    var currentStepIndex by remember { mutableIntStateOf(0) }
+    var currentPlayerIndex by remember { mutableIntStateOf(0) }
+    var inputText by remember { mutableStateOf("") }
+    var isHiddenLocked by remember { mutableStateOf(false) }
+
+    val answers = remember {
+        mutableStateMapOf<GameStep, MutableMap<String, String>>().apply {
+            GameStep.entries.forEach { put(it, mutableMapOf()) }
+        }
+    }
+
+    var results by remember { mutableStateOf<List<SentenceResult>>(emptyList()) }
+
+    when (screen) {
+        ScreenState.LOBBY -> MobileLobbyScreen(
+            players = players,
+            onAddPlayer = { name ->
+                if (name.isNotBlank()) {
+                    players = players + Player(UUID.randomUUID().toString(), name.trim())
+                }
+            },
+            onRemovePlayer = { id ->
+                if (players.size > 2) {
+                    players = players.filterNot { it.id == id }
+                }
+            },
+            onStartGame = {
+                GameStep.entries.forEach { answers[it]?.clear() }
+                currentStepIndex = 0
+                currentPlayerIndex = 0
+                inputText = ""
+                isHiddenLocked = false
+                screen = ScreenState.PLAYING
+            }
+        )
+
+        ScreenState.PLAYING -> {
+            val step = GameStep.entries[currentStepIndex]
+            val activePlayer = players[currentPlayerIndex]
+
+            LaunchedEffect(isHiddenLocked) {
+                if (isHiddenLocked) {
+                    delay(850)
+                    isHiddenLocked = false
+                    inputText = ""
+                    if (currentPlayerIndex + 1 < players.size) {
+                        currentPlayerIndex++
+                    } else {
+                        screen = ScreenState.SHUFFLING
+                    }
+                }
+            }
+
+            MobilePlayScreen(
+                step = step,
+                player = activePlayer,
+                playerProgress = "${currentPlayerIndex + 1}/${players.size}",
+                inputText = inputText,
+                isHiddenLocked = isHiddenLocked,
+                onInputChange = { inputText = it },
+                onConfirmTick = {
+                    if (inputText.isNotBlank() && !isHiddenLocked) {
+                        answers[step]?.put(activePlayer.id, inputText.trim())
+                        isHiddenLocked = true
+                    }
+                }
+            )
+        }
+
+        ScreenState.SHUFFLING -> {
+            val finishedStep = GameStep.entries[currentStepIndex]
+            LaunchedEffect(currentStepIndex) {
+                delay(1400)
+                if (currentStepIndex + 1 < GameStep.entries.size) {
+                    currentStepIndex++
+                    currentPlayerIndex = 0
+                    screen = ScreenState.PLAYING
+                } else {
+                    results = GameShuffler.buildSentences(players, answers)
+                    screen = ScreenState.RESULTS
+                }
+            }
+            MobileShuffleScreen(finishedStepTitle = finishedStep.title)
+        }
+
+        ScreenState.RESULTS -> MobileResultsScreen(
+            results = results,
+            onPlayAgain = { screen = ScreenState.LOBBY }
+        )
+    }
+}
+
+@Composable
+private fun FourColumnBar(activeStepIndex: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(CardWhite)
+            .padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        GameStep.entries.forEach { step ->
+            val isActive = step.index == activeStepIndex
+            val isDone = step.index < activeStepIndex
+
+            val bg = when {
+                isActive -> BrandIndigo
+                isDone -> DoneGreenSoft
+                else -> MobileBg
+            }
+            val fg = when {
+                isActive -> Color.White
+                isDone -> DoneGreenText
+                else -> TextMuted
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(bg)
+                    .padding(vertical = 10.dp, horizontal = 2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = step.title.removeSuffix("?"),
+                    color = fg,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileLobbyScreen(
+    players: List<Player>,
+    onAddPlayer: (String) -> Unit,
+    onRemovePlayer: (String) -> Unit,
+    onStartGame: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Kim, Kiminle, Nerede?",
+                fontSize = 25.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = TextInk
+            )
+            Text(
+                text = "Kişileri ekle, telefonu sırayla dolaştır.",
+                fontSize = 14.sp,
+                color = TextMuted,
+                modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
+            )
+
+            FourColumnBar(activeStepIndex = 0)
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    placeholder = { Text("İsim yaz...") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = CardWhite,
+                        unfocusedContainerColor = CardWhite
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                FilledIconButton(
+                    onClick = {
+                        onAddPlayer(newName)
+                        newName = ""
+                    },
+                    modifier = Modifier.size(54.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = BrandIndigo)
+                ) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = "Ekle", tint = Color.White)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                itemsIndexed(players) { index, player ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = CardWhite,
+                        shadowElevation = 1.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(BrandIndigoSoft),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "${index + 1}",
+                                        color = BrandIndigo,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = player.name,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = TextInk
+                                )
+                            }
+
+                            if (players.size > 2) {
+                                IconButton(
+                                    onClick = { onRemovePlayer(player.id) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Kaldır",
+                                        tint = Color(0xFFDC2626)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(
+            onClick = onStartGame,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = BrandIndigo)
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Oyuna Başla (${players.size} Kişi)",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun MobilePlayScreen(
+    step: GameStep,
+    player: Player,
+    playerProgress: String,
+    inputText: String,
+    isHiddenLocked: Boolean,
+    onInputChange: (String) -> Unit,
+    onConfirmTick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column {
+            FourColumnBar(activeStepIndex = step.index)
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Sıra: ${player.name}",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = BrandIndigo
+                )
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = BrandIndigoSoft
+                ) {
+                    Text(
+                        text = playerProgress,
+                        color = BrandIndigo,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = CardWhite,
+                shadowElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = step.title,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = TextInk
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (isHiddenLocked) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(132.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(TextInk),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.VisibilityOff,
+                                    contentDescription = null,
+                                    tint = TickGreen,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Gizlendi ve Karışmaya Girdi",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp
+                                )
+                            }
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = onInputChange,
+                            placeholder = { Text(step.hint, color = TextMuted) },
+                            shape = RoundedCornerShape(16.dp),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 17.sp, color = TextInk),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(132.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = onConfirmTick,
+            enabled = inputText.isNotBlank() && !isHiddenLocked,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(62.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = TickGreen)
+        ) {
+            Icon(Icons.Default.Check, contentDescription = "Okey", modifier = Modifier.size(28.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Okey — Gizle ve Devam Et",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun MobileShuffleScreen(finishedStepTitle: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(92.dp)
+                .clip(CircleShape)
+                .background(BrandIndigoSoft),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.Shuffle,
+                contentDescription = null,
+                tint = BrandIndigo,
+                modifier = Modifier.size(46.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(
+            text = "\"${finishedStepTitle.removeSuffix("?")}\" Karıştırılıyor",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = TextInk,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Yazılanlar gizli kalıyor, sıradaki aşama hazırlanıyor...",
+            fontSize = 15.sp,
+            color = TextMuted,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun MobileResultsScreen(
+    results: List<SentenceResult>,
+    onPlayAgain: () -> Unit
+) {
+    var currentIndex by remember { mutableIntStateOf(0) }
+    var showAll by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            FourColumnBar(activeStepIndex = 4)
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Cümleler",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = TextInk
+                )
+                FilledTonalButton(
+                    onClick = { showAll = !showAll },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(if (showAll) "Tek Tek Oku" else "Tüm Liste")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (!showAll && results.isNotEmpty()) {
+                val item = results[currentIndex]
+
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = ResultCardBg,
+                    border = BorderStroke(1.5.dp, ResultCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(22.dp)) {
+                        Text(
+                            text = "Okuyan: ${item.readerName} (${currentIndex + 1}/${results.size})",
+                            color = BrandIndigo,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = item.fullText,
+                            fontSize = 23.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = TextInk,
+                            lineHeight = 32.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { if (currentIndex > 0) currentIndex-- },
+                        enabled = currentIndex > 0,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = null)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Önceki")
+                    }
+                    Button(
+                        onClick = { if (currentIndex + 1 < results.size) currentIndex++ },
+                        enabled = currentIndex + 1 < results.size,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = BrandIndigo)
+                    ) {
+                        Text("Sonraki")
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(Icons.Default.ArrowForward, contentDescription = null)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    itemsIndexed(results) { idx, item ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = CardWhite,
+                            shadowElevation = 1.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "${idx + 1}. ${item.readerName}",
+                                    color = BrandIndigo,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = item.fullText,
+                                    color = TextInk,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 16.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(
+            onClick = onPlayAgain,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = TextInk)
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Yeni Oyun", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}

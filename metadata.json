@@ -1,0 +1,6 @@
+{
+  "name": "Kim, Kiminle, Nerede?",
+  "description": "Kişileri ekle, sırayla gizlice yaz, cevaplar karışsın ve ortaya çıkan komik cümleleri oku.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
